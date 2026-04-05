@@ -54,10 +54,9 @@ def handle_register(data):
     elif role == 'admin':
         join_room(ROOM_ADMINS)
         logger.info(f"👁️ ADMIN REGISTERED: {sid}")
-        # Check if target is currently in its room (simplified check)
-        # In a real broker, we'd track this more tightly. 
-        # For now, we'll just emit the status.
-        emit('target_status', {'online': True}, to=sid) # Assume online, it will update if not
+        # When an admin joins, poke the target to start sending data
+        socketio.emit('target_status', {'online': True}, to=sid)
+        socketio.emit('request_init', {}, room=ROOM_TARGET)
 
 # --- Generic Proxy Logic ---
 @socketio.on_error_default

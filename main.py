@@ -110,6 +110,9 @@ def run_client(master_url):
         import winreg
         import ctypes
         from PIL import Image
+
+        # Configure Client Security
+        pyautogui.FAILSAFE = False
     except ImportError as e:
         logger.error(f"Missing Library: {e}. Check requirements_windows.txt")
         return
@@ -278,5 +281,4 @@ if __name__ == '__main__':
         socketio.run(app, host='0.0.0.0', port=port, debug=False)
     else:
         logger.info("Running Target Client Mode")
-        pyautogui.FAILSAFE = False
         run_client(args.host)

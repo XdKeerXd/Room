@@ -433,14 +433,18 @@ document.addEventListener('pointerlockchange', () => {
     document.getElementById('mouseBtn').classList.toggle('active', mouseLocked);
 });
 canvas.addEventListener('mousemove', e => {
-    if(!mouseLocked) return;
-    const sx=screenSize.width/canvas.clientWidth, sy=screenSize.height/canvas.clientHeight;
-    mouseX=Math.max(0,Math.min(screenSize.width,mouseX+e.movementX*sx));
-    mouseY=Math.max(0,Math.min(screenSize.height,mouseY+e.movementY*sy));
-    socket.emit('mouse',{type:'move',x:Math.round(mouseX),y:Math.round(mouseY)});
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / canvas.clientWidth;
+    const y = (e.clientY - rect.top) / canvas.clientHeight;
+    socket.emit('mouse', {type: 'move', x: x, y: y});
 });
-canvas.addEventListener('mousedown', e => { if(!mouseLocked) return; e.preventDefault();
-    socket.emit('mouse',{type:'click',button:e.button===2?'right':'left'}); });
+canvas.addEventListener('mousedown', e => { 
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / canvas.clientWidth;
+    const y = (e.clientY - rect.top) / canvas.clientHeight;
+    socket.emit('mouse', {type: 'click', button: e.button === 2 ? 'right' : 'left', x, y}); 
+});
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('wheel', e => { if(!mouseLocked) return;
     socket.emit('mouse',{type:'scroll',amount:e.deltaY>0?-3:3}); });
@@ -448,7 +452,13 @@ document.addEventListener('keydown', e => { if(!mouseLocked) return; e.preventDe
     socket.emit('keyboard',{type:'press',key:e.key.length===1?e.key:e.key.toLowerCase()}); });
 
 function sendHotkey(...keys) { socket.emit('keyboard',{type:'hotkey',keys}); }
-function toggleWebcam() { const w=document.getElementById('webcam-pip'); w.style.display=w.style.display==='none'?'block':'none'; }
+function toggleWebcam() { 
+    const w = document.getElementById('webcam-pip');
+    const showing = w.style.display === 'none';
+    w.style.display = showing ? 'block' : 'none';
+    if(showing) socket.emit('webcam_start');
+    else socket.emit('webcam_stop');
+}
 
 // Session Recording
 let mediaRecorder=null, recordedChunks=[];

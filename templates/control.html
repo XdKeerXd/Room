@@ -211,8 +211,9 @@
     <!-- TOPBAR -->
     <div class="topbar">
         <div class="topbar-left">
-            <span class="status-badge" style="background:var(--warn); border-color:#ffaa00; color:#000" id="statusBadge">CONNECTING...</span>
+            <span class="status-badge" id="statusBadge">CONNECTING...</span>
             <span class="stats-pill" id="fpsPill">FPS: -- | Ping: --ms</span>
+            <span class="stats-pill" id="frameCounter" style="background:rgba(0,255,136,0.1); color:var(--accent)">Frames: 0</span>
         </div>
         <div class="topbar-right">
             <span class="stats-pill" id="resPill">--</span>
@@ -448,27 +449,34 @@ socket.on('init', d => {
     if(d.gpu_available) document.getElementById('gpuCard').style.display='';
 });
 
+let totalFramesReceived = 0;
 socket.on('screen_frame', d => {
     const img = new Image();
     img.onload = () => {
-        if(canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) resizeCanvas();
-        ctx.drawImage(img, 0, 0, canvas.clientWidth, canvas.clientHeight);
+        if(canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+        }
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        totalFramesReceived++;
+        document.getElementById('frameCounter').textContent = `Frames: ${totalFramesReceived}`;
+        
         frameCount++;
         const now = performance.now();
         if(now - lastFrame > 1000) {
-            fps = Math.round(frameCount*1000/(now-lastFrame));
+            fps = Math.round(frameCount * 1000 / (now - lastFrame));
             const ping = Math.round(Date.now() - (d.timestamp * 1000));
-            const pingText = `${ping > 0 ? ping : 0}ms`;
-            document.getElementById('fpsPill').textContent = `FPS: ${fps} | Ping: ${pingText}`;
-            document.getElementById('asidePing').textContent = pingText;
+            document.getElementById('fpsPill').textContent = `FPS: ${fps} | Ping: ${ping > 0 ? ping : 0}ms`;
+            document.getElementById('asidePing').textContent = (ping > 0 ? ping : 0) + 'ms';
             document.getElementById('asideFps').textContent = fps + ' FPS';
-            frameCount=0; lastFrame=now;
+            frameCount = 0; lastFrame = now;
             document.getElementById('hudTimestamp').textContent = new Date().toLocaleTimeString();
         }
-        document.getElementById('resPill').textContent = (d.width || '--')+'×'+(d.height || '--');
     };
-    img.onerror = (e) => console.error('🖼️ Image Render Error:', e);
-    img.src = 'data:image/jpeg;base64,'+d.image;
+    img.src = 'data:image/jpeg;base64,' + d.image;
 });
 
 socket.on('webcam_frame', d => { 

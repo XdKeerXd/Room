@@ -199,7 +199,7 @@
     <!-- TOPBAR -->
     <div class="topbar">
         <div class="topbar-left">
-            <span class="status-badge online" id="statusBadge">● LIVE</span>
+            <span class="status-badge" style="background:var(--warn); border-color:#ffaa00; color:#000" id="statusBadge">CONNECTING...</span>
             <span class="stats-pill" id="fpsPill">FPS: -- | Ping: --ms</span>
         </div>
         <div class="topbar-right">
@@ -348,6 +348,24 @@ const ctx = canvas.getContext('2d');
 let mouseLocked=false, screenSize={width:1920,height:1080}, mouseX=0, mouseY=0;
 let frameCount=0, lastFrame=0, fps=0, currentMonitor=1, totalMonitors=1;
 let processData=[], procSortKey='cpu', procSortAsc=false;
+
+socket.on('connect', () => {
+    console.log('🔗 Connected to Broker. Registering as Admin.');
+    socket.emit('register', { role: 'admin' });
+});
+
+socket.on('target_status', d => {
+    const badge = document.getElementById('statusBadge');
+    if(d.online) {
+        badge.textContent = '● TARGET ONLINE';
+        badge.className = 'status-badge online';
+        badge.style = '';
+    } else {
+        badge.textContent = '❌ TARGET OFFLINE';
+        badge.className = 'status-badge';
+        badge.style = 'background:rgba(255,51,102,0.15); border:1px solid rgba(255,51,102,0.3); color:var(--danger);';
+    }
+});
 
 // ============================================================
 //  TAB SWITCHING
@@ -673,8 +691,9 @@ function sendAlert() {
 }
 socket.on('alert_sent', () => {});
 
-// Auto-start terminal on first visit
-socket.on('connect', () => console.log('🔥 Connected to Control Room'));
+// ============================================================
+//  End of script
+// ============================================================
 </script>
 </body>
 </html>

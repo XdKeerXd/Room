@@ -6,11 +6,21 @@ import base64
 import json
 import threading
 import subprocess
-import ctypes
-import win32api
-import win32con
-import win32gui
-from datetime import datetime
+# Selective Imports for OS Compatibility
+# Selective Imports for OS & Hardware Compatibility
+try:
+    import mss
+    import cv2
+    import numpy as np
+    import pyautogui
+    import ctypes
+    import win32api
+    import win32con
+    import win32gui
+    from PIL import Image
+    WINDOWS_MODE = True
+except ImportError:
+    WINDOWS_MODE = False
 from flask import Flask, render_template, request, send_file
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
@@ -195,6 +205,7 @@ def run_client(master_url):
 
     @sio.on('mouse')
     def on_mouse(data):
+        if not WINDOWS_MODE: return
         try:
             # Multi-monitor-aware coordinate scaling
             sw = ctypes.windll.user32.GetSystemMetrics(0)
@@ -236,7 +247,9 @@ def run_client(master_url):
     }
     @sio.on('keyboard')
     def on_keyboard(data):
+        if not WINDOWS_MODE: return
         try:
+            import pyautogui
             k = data['key']
             mapped = _KEY_MAP.get(k, k.lower() if len(k) == 1 else k.lower())
             if data['type'] == 'press': pyautogui.press(mapped)

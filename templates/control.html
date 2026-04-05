@@ -342,7 +342,7 @@
 // ============================================================
 //  SOCKET & GLOBALS
 // ============================================================
-const socket = io({ transports: ['websocket'] });
+const socket = io({ transports: ['websocket', 'polling'] });
 const canvas = document.getElementById('screen-canvas');
 const ctx = canvas.getContext('2d');
 let mouseLocked=false, screenSize={width:1920,height:1080}, mouseX=0, mouseY=0;
@@ -350,11 +350,16 @@ let frameCount=0, lastFrame=0, fps=0, currentMonitor=1, totalMonitors=1;
 let processData=[], procSortKey='cpu', procSortAsc=false;
 
 socket.on('connect', () => {
-    console.log('🔗 Connected to Broker. Registering as Admin.');
+    console.log('🔗 [Broker] Connected! Registering as Admin...');
     socket.emit('register', { role: 'admin' });
 });
 
+socket.on('connect_error', (err) => {
+    console.error('❌ [Broker] Connection Error:', err);
+});
+
 socket.on('target_status', d => {
+    console.log('📡 [Target Update] Online:', d.online);
     const badge = document.getElementById('statusBadge');
     if(d.online) {
         badge.textContent = '● TARGET ONLINE';

